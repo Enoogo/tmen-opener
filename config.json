@@ -1,0 +1,110 @@
+{
+  "app": {
+    "title": "泰盟 BL .tmen 波形查看器",
+    "window_width": 1280,
+    "window_height": 800,
+    "dpi": 100,
+    "remember_geometry": true,
+    "max_points_per_curve": 4000,
+    "confirm_close_tab": false
+  },
+  "data": {
+    "stream_name": "Channel_Data1",
+    "sample_rate_fallback": 1000.0,
+    "snap_sample_rate": true,
+    "smooth_window": 1,
+    "zero_mode": "auto",
+    "zero_points": 2000,
+    "zero_auto_channels": "张力,肌张力,force,Force",
+    "channel_units": "张力=g;肌张力=g;动脉血压=mmHg;血压=mmHg"
+  },
+  "style": {
+    "figure_facecolor": "#FFFFFF",
+    "axes_facecolor": "#FFFFFF",
+    "waveform_color": "#FF0000",
+    "waveform_linewidth_px": 1.0,
+    "antialiased": false,
+    "axis_color": "#404040",
+    "axis_linewidth_px": 1.0,
+    "tick_color": "#404040",
+    "tick_length_px": 4.0,
+    "grid_enabled": true,
+    "grid_color": "#D2D2D2",
+    "grid_linewidth_px": 1.0,
+    "grid_linestyle": "--",
+    "ticklabel_color": "#1858B8",
+    "ticklabel_size": 9.0,
+    "label_color": "#1858B8",
+    "label_size": 10.0,
+    "show_xlabel": true,
+    "xlabel": "时间",
+    "ylabel_mode": "channel",
+    "ylabel_custom": "",
+    "show_title": false,
+    "title_template": "{name}",
+    "title_color": "#1858B8",
+    "title_size": 11.0,
+    "font_family": "Microsoft YaHei,SimHei,WenQuanYi Zen Hei,Noto Sans CJK SC,DejaVu Sans"
+  },
+  "time_axis": {
+    "format": "mm:ss.mmm",
+    "right_pad_ratio": 0.02,
+    "show_hint": false
+  },
+  "y_axis": {
+    "format": "%.2f",
+    "autoscale_padding": 0.06
+  },
+  "interaction": {
+    "wheel_zoom_x": true,
+    "ctrl_wheel_zoom_y": true,
+    "wheel_zoom_factor": 0.85,
+    "pan_with_left_drag": true,
+    "zoom_with_right_drag": true,
+    "lock_aspect_with_ctrl": true,
+    "double_click_reset": true,
+    "show_hover_marker": true,
+    "show_crosshair": false,
+    "key_pan_fraction": 0.25,
+    "min_span_s": 0.0005
+  },
+  "stimulus": {
+    "enabled": true,
+    "show_marker": true,
+    "show_band": true,
+    "marker_color": "#E08A00",
+    "marker_linewidth_px": 1.0,
+    "marker_linestyle": "--",
+    "band_color": "#F5C043",
+    "band_alpha": 0.2,
+    "label_template": "{amp}V {freq}Hz {ch}c",
+    "label_color": "#A86400",
+    "label_size": 8.0,
+    "label_min_gap_px": 32,
+    "label_rows": 3,
+    "label_row_step": 0.048,
+    "merge_gap_s": 0.25,
+    "min_freq_hz": 0.5,
+    "max_freq_hz": 100000.0,
+    "max_amp_v": 200.0
+  },
+  "events": {
+    "enabled": false,
+    "color": "#7A7A7A",
+    "size": 7.0,
+    "label_template": "{value:g}"
+  },
+  "status": {
+    "show_peak_to_peak": true,
+    "show_min_max": true,
+    "precision": 3
+  },
+  "subplot": {
+    "left": 0.088,
+    "right": 0.975,
+    "bottom": 0.125,
+    "top": 0.94,
+    "wspace": 0.12,
+    "hspace": 0.12
+  }
+}

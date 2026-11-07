@@ -1,0 +1,4 @@
+numpy>=1.21
+matplotlib>=3.5
+olefile>=0.46
+tkinterdnd2>=0.3 ; python_version >= "3.8"
