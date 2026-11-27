@@ -10,4 +10,4 @@ dialogs  Subplot configuration tool（子图布局 + 全部设置）
 ui       主窗口（工具栏 / 多标签页 / 状态栏）
 """
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"

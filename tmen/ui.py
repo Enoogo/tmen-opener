@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import os
 import tkinter as tk
+from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
+from tkinter.scrolledtext import ScrolledText
 from typing import Dict, List, Optional
 
 from .config import Config
 from .dialogs import ToolkitWindow
-from .parser import TmenData, read_tmen
+from .parser import DEFAULT_STIMULUS_LABEL, TmenData, read_tmen
 from .plot import PlotPage
+from .style import format_time
 
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -252,6 +255,7 @@ class App:
 
         button("打开文件", self.open_dialog, tip="Ctrl+O")
         button("重新载入", self.reload_current, tip="按当前配置重新解析文件")
+        button("数据详情", self.show_data_details, tip="查看实验信息、逐条刺激、事件及未识别记录")
         button("保存图片", self.save_image, tip="Ctrl+S，导出当前视图（线宽保持 1 像素）")
         button("复位", self.reset_view, tip="F")
         button("纵轴自适应", self.autoscale_y, tip="A，按当前可视段自动缩放纵轴")
@@ -309,22 +313,22 @@ class App:
         page = PlotPage(self.content, data, self.cfg, self)
         self.pages[key] = page
         self.tabs.add(key, path.stem)
-        self._show_page(key)
-        self.set_status(self._describe(data))
-        if data.notes:
-            self.info_label.configure(text="；".join(data.notes[:2]))
         return key
 
     def _describe(self, data: TmenData) -> str:
-        stim = f" | 刺激组 {len(data.stimuli)}" if data.stimuli else ""
         zero = ""
         if data.zero_mode_used not in ("none", None):
             zero = f" | 零点校正 {data.offset_applied:+.3f}"
+        unparsed = f" | 未识别 {len(data.unparsed_records)}" if data.unparsed_records else ""
         return (
             f"{data.name} | {data.n_samples} 点 | {data.fs:g} Hz | "
             f"{data.duration:.2f} s | {data.channel_name or '未知通道'}"
-            f"{zero}{stim}"
+            f"{zero} | 刺激 {len(data.stimulus_records)} 条 | 事件 {len(data.events)} 条{unparsed}"
         )
+
+    def _show_data_status(self, data: TmenData) -> None:
+        self.set_status(self._describe(data))
+        self.info_label.configure(text="有解析提示 · 查看数据详情" if data.notes else "")
 
     def _show_page(self, key: str) -> None:
         for k, page in self.pages.items():
@@ -342,7 +346,7 @@ class App:
         if page is not None:
             self.var_lock_x.set(page.lock_x)
             self.var_lock_y.set(page.lock_y)
-            self.set_status(self._describe(page.data))
+            self._show_data_status(page.data)
             page.canvas.get_tk_widget().focus_set()
 
     def _on_tab_close(self, key: str) -> None:
@@ -358,6 +362,7 @@ class App:
         if not self.pages:
             self._placeholder.pack(expand=True)
             self.set_status("就绪 — 拖入 .tmen 文件，或点击“打开文件”")
+            self.info_label.configure(text="")
 
     def current_page(self) -> Optional[PlotPage]:
         key = self.tabs.current_key
@@ -377,8 +382,80 @@ class App:
         page = self.current_page()
         if page is None:
             return
-        page.reload()
-        self.set_status(self._describe(page.data))
+        if page.reload():
+            self._show_data_status(page.data)
+
+    def show_data_details(self) -> None:
+        page = self.current_page()
+        if page is None:
+            return
+        data = page.data
+        window = tk.Toplevel(self.root)
+        window.title(f"数据详情 — {data.name}")
+        window.geometry("850x570")
+        window.transient(self.root)
+        notebook = ttk.Notebook(window)
+        notebook.pack(fill="both", expand=True, padx=8, pady=8)
+
+        def add_tab(title: str, lines: list[str]) -> None:
+            view = ScrolledText(notebook, wrap="word", padx=10, pady=8,
+                                font=("Microsoft YaHei UI", 10))
+            view.insert("1.0", "\n".join(lines))
+            view.configure(state="disabled")
+            notebook.add(view, text=title)
+
+        summary = [
+            data.name, f"实验项目：{data.experiment or '未记录'}",
+            f"设备：{data.device or '未记录'}",
+            f"通道：{data.ylabel(self.cfg.unit_map())}",
+            f"波形：{data.n_samples} 点，{data.duration:.3f} 秒，采样率 {data.fs:g} Hz",
+        ]
+        if data.recorded_sample_rate is not None:
+            summary.append(f"文件记录的采样率：{data.recorded_sample_rate:.9g} Hz")
+        for title, stamp in (("开始", data.start_timestamp), ("结束", data.end_timestamp)):
+            if stamp is not None:
+                recorded = datetime.fromtimestamp(stamp).astimezone().isoformat(sep=" ")
+                summary.append(f"记录{title}：{recorded}")
+        summary.append(f"文件流：{', '.join(data.streams)}")
+        summary.extend(f"提示：{note}" for note in data.notes)
+        for name, value in data.experiment_details.items():
+            if name != "实验项目":
+                summary.extend(("", name, value))
+        add_tab("实验信息", summary)
+
+        stimuli = [f"{len(data.stimulus_records)} 条记录，{len(data.stimuli)} 组"]
+        for group in data.stimuli:
+            start, end = format_time(group.t0), format_time(group.t1)
+            stimuli.append(f"{start} ~ {end}    {group.label(DEFAULT_STIMULUS_LABEL)}"
+                           f"    {group.n_records} 条")
+        if data.stimulus_records:
+            stimuli.extend(("", "逐条记录（0 Hz 对应原文件频率字段的零值）"))
+        for record in data.stimulus_records:
+            stimuli.append(
+                f"{format_time(record.time)}    采样点 {record.index}    {record.channel}c"
+                f"    {record.amplitude_v:g} V    {record.frequency_hz:g} Hz"
+                f"    脉宽 {record.pulse_width_ms:g} ms    间隔 {record.interval_ms:g} ms"
+                f"    类型 {record.kind}    模式 0x{record.mode:X}"
+                f"    标志 {record.flag}    计数 {record.count}"
+            )
+        add_tab("电刺激", stimuli)
+
+        events = [f"{len(data.events)} 条记录"]
+        for event in data.events:
+            recorded = (
+                datetime.fromtimestamp(event.timestamp).astimezone().isoformat(sep=" ")
+                if event.timestamp is not None else "未记录"
+            )
+            events.append(f"{format_time(event.time)}    采样点 {event.index}"
+                          f"    类型 {event.kind}    值 {event.value:g}    记录时间 {recorded}")
+        add_tab("事件", events)
+
+        issues = list(data.notes) or ["没有发现未识别记录"]
+        for record in data.unparsed_records:
+            location = f"    候选采样点 {record.index}" if record.index is not None else ""
+            issues.extend(("", f"{record.stream} +0x{record.offset:X}    {record.reason}{location}",
+                           record.raw.hex(" ").upper()))
+        add_tab("解析提示", issues)
 
     def save_image(self) -> None:
         page = self.current_page()
@@ -461,8 +538,9 @@ class App:
             "  打开文件 / 拖入 .tmen 均新建标签页；拖动标签可调整顺序；\n"
             "  标签上的 ✕ 关闭，Ctrl+W 关闭当前，Ctrl+O 打开文件，Ctrl+S 保存图片。\n\n"
             "【标注】\n"
-            "  橙色竖线与文字为 .tmen 中 Stimulate 流记录的电刺激参数"
+            "  横轴上方的绿色刻线与文字显示电刺激的时间和参数"
             "（强度 V / 频率 Hz / 通道 c）。\n"
+            "  点击“数据详情”可查看逐条刺激、事件及解析提示。\n"
             "  底部一行实时显示鼠标所在点的坐标，以及当前可视段的"
             "最小值、最大值、峰峰值。",
         )
@@ -471,7 +549,7 @@ class App:
     def apply_config(self, changed_sections: Optional[List[str]] = None) -> None:
         """应用配置：数据类参数变化时重新解析，样式类变化时重建图。"""
         sections = set(changed_sections or [])
-        need_reload = bool(sections & {"data"})
+        need_reload = bool(sections & {"data", "stimulus"})
         from .style import init_matplotlib
 
         init_matplotlib(self.cfg.font_list())
@@ -480,7 +558,7 @@ class App:
 
         for page in self.pages.values():
             if need_reload:
-                page.reload()
+                page.reload(keep_view="data" not in sections)
             else:
                 page.apply_config()
         if not self.pages:

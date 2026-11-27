@@ -27,10 +27,9 @@ from matplotlib.collections import LineCollection, PolyCollection
 from matplotlib.figure import Figure
 from matplotlib.patches import Rectangle
 from matplotlib.ticker import FuncFormatter
-from matplotlib.transforms import blended_transform_factory
 
 from .config import Config
-from .parser import TmenData, read_tmen
+from .parser import DEFAULT_STIMULUS_LABEL, TmenData, read_tmen
 from .style import TimeFormatter, apply_axes_style, apply_figure_style, format_time, px_to_pt
 
 CURSOR_DEFAULT = ""
@@ -103,14 +102,19 @@ class PlotPage(tk.Frame):
         self.hide_hover()
         self.app.notify_title(self)
 
-    def reload(self) -> None:
+    def reload(self, keep_view: bool = False) -> bool:
         """按当前配置重新解析文件（改平滑 / 零点 / 数据流后调用）。"""
         try:
             data = read_tmen(self.data.path, self.cfg)
         except Exception as exc:  # 解析失败时保留旧数据
             self.app.set_status(f"重新载入失败：{exc}")
-            return
-        self.load(data)
+            return False
+        if keep_view:
+            self.data = data
+            self.apply_config()
+        else:
+            self.load(data)
+        return True
 
     # ------------------------------------------------------------------ 绘图
     def _prepare_axes(self) -> None:
@@ -140,36 +144,35 @@ class PlotPage(tk.Frame):
             zorder=4,
         )
 
-        # 刺激标注：固定 artist，缩放时只换数据，避免反复增删
+        # 横向用采样时间，纵向贴住横轴，随横轴缩放而不受纵轴缩放影响。
+        axis_transform = ax.get_xaxis_transform()
         self._stim_lines = LineCollection(
             [],
-            colors=[cfg.get("stimulus.marker_color", "#E08A00")],
+            colors=[cfg.get("stimulus.marker_color", "#008000")],
             linewidths=[px_to_pt(cfg.get("stimulus.marker_linewidth_px", 1.0), dpi)],
-            linestyles=[cfg.get("stimulus.marker_linestyle", "--")],
-            zorder=3, clip_on=True,
+            linestyles=[cfg.get("stimulus.marker_linestyle", "-")],
+            transform=axis_transform, antialiaseds=False, zorder=5,
         )
-        ax.add_collection(self._stim_lines)
+        ax.add_collection(self._stim_lines, autolim=False)
 
         self._stim_bands = PolyCollection(
             [],
-            facecolors=[cfg.get("stimulus.band_color", "#F5C043")],
+            facecolors=[cfg.get("stimulus.band_color", "#008000")],
             alpha=float(cfg.get("stimulus.band_alpha", 0.2)),
-            edgecolors="none", zorder=1,
-            transform=blended_transform_factory(ax.transData, ax.transAxes),
+            edgecolors="none", zorder=3, transform=axis_transform,
         )
-        ax.add_collection(self._stim_bands)
+        ax.add_collection(self._stim_bands, autolim=False)
 
-        blended = blended_transform_factory(ax.transData, ax.transAxes)
-        self._stim_labels = []
-        for _ in self.data.stimuli:
-            self._stim_labels.append(ax.text(
-                0.0, 0.985, "", transform=blended, ha="left", va="top",
-                fontsize=float(cfg.get("stimulus.label_size", 8.0)),
-                color=cfg.get("stimulus.label_color", "#A86400"),
-                zorder=7, clip_on=False,
-                bbox=dict(boxstyle="square,pad=0.15", facecolor="#FFFFFF",
-                          edgecolor="none", alpha=0.90),
-            ))
+        template = str(cfg.get("stimulus.label_template", DEFAULT_STIMULUS_LABEL))
+        self._stim_labels = [
+            ax.text(
+                group.t0, 0.0, group.label(template), transform=axis_transform,
+                ha="center", va="bottom", fontsize=float(cfg.get("stimulus.label_size", 7.0)),
+                color=cfg.get("stimulus.label_color", "#008000"),
+                zorder=7, clip_on=True, visible=False,
+            )
+            for group in self.data.stimuli
+        ]
 
         # 悬浮标记（animated：普通重绘不画它，靠 blit 单独刷新，鼠标移动才不卡）
         self._hover_pt, = ax.plot(
@@ -194,15 +197,17 @@ class PlotPage(tk.Frame):
         if cfg.get("events.enabled", False) and self.data.events:
             color = cfg.get("events.color", "#7A7A7A")
             tpl = str(cfg.get("events.label_template", "{value:g}"))
+            labels_by_time = {}
             for ev in self.data.events:
-                ax.axvline(ev.time, color=color, linestyle=":", linewidth=px_to_pt(1.0, dpi),
-                           alpha=0.8, zorder=2)
                 try:
-                    text = tpl.format(value=ev.value, t=ev.time)
+                    text = tpl.format(value=ev.value, t=ev.time, kind=ev.kind)
                 except Exception:
                     text = f"{ev.value:g}"
-                ax.text(ev.time, 0.015, text, transform=blended_transform_factory(
-                    ax.transData, ax.transAxes), ha="left", va="bottom",
+                labels_by_time.setdefault(ev.time, []).append(text)
+            for time, labels in labels_by_time.items():
+                ax.axvline(time, color=color, linestyle=":", linewidth=px_to_pt(1.0, dpi),
+                           alpha=0.8, zorder=2)
+                ax.text(time, 0.985, "\n".join(labels), transform=axis_transform, ha="left", va="top",
                     fontsize=float(cfg.get("events.size", 7.0)), color=color,
                     zorder=6, clip_on=True)
 
@@ -296,119 +301,80 @@ class PlotPage(tk.Frame):
         if redraw:
             self.canvas.draw_idle()
 
-    def _axes_px(self) -> Tuple[float, float, float, float]:
-        """坐标区在画布上的像素范围（不依赖 draw 状态，随时可用）。"""
-        pos = self.ax.get_position()
-        width_in, height_in = self.fig.get_size_inches()
-        dpi = float(self.fig.get_dpi())
-        return (pos.x0 * width_in * dpi, pos.y0 * height_in * dpi,
-                pos.x1 * width_in * dpi, pos.y1 * height_in * dpi)
-
     def _update_stimulus(self) -> None:
         cfg = self.cfg
         ax = self.ax
-        groups = self.data.stimuli if cfg.get("stimulus.enabled", True) else []
-        x0, x1 = ax.get_xlim()
-        span = max(abs(x1 - x0), 1e-9)
+        for text in self._stim_labels:
+            text.set_visible(False)
+        if not cfg.get("stimulus.enabled", True) or not self.data.stimuli:
+            self._stim_lines.set_segments([])
+            self._stim_bands.set_verts([])
+            return
 
-        segments = []
-        bands = []
-        show_marker = bool(cfg.get("stimulus.show_marker", True))
-        show_band = bool(cfg.get("stimulus.show_band", True))
-        for g in groups:
-            if g.t1 < x0 - span or g.t0 > x1 + span:
+        x0, x1 = sorted(ax.get_xlim())
+        left, bottom, width, height = ax.bbox.bounds
+        if width <= 10 or height <= 10:
+            self._stim_lines.set_segments([])
+            self._stim_bands.set_verts([])
+            return
+
+        font_px = float(cfg.get("stimulus.label_size", 7.0)) * self.fig.dpi / 72.0
+        tick_bottom = (font_px + 5) / height
+        tick_top = tick_bottom + 9 / height
+        row_step = max(float(cfg.get("stimulus.label_row_step", 0.048)),
+                       (font_px + 5) / height)
+        row_count = max(1, int(cfg.get("stimulus.label_rows", 2)))
+        row_positions = [2 / height + i * row_step for i in range(row_count)
+                         if (2 + font_px) / height + i * row_step < 1]
+        min_gap = float(cfg.get("stimulus.label_min_gap_px", 8))
+        pixels_per_second = width / (x1 - x0)
+        show_marker = cfg.get("stimulus.show_marker", True)
+        show_band = cfg.get("stimulus.show_band", False)
+        segments, bands, candidates = [], [], []
+        for group, label in zip(self.data.stimuli, self._stim_labels):
+            if group.t1 < x0 or group.t0 > x1:
                 continue
+            visible_times = [r.time for r in group.records if x0 <= r.time <= x1]
+            if not group.records and x0 <= group.t0 <= x1:
+                visible_times = [group.t0]
+            if len(visible_times) > 1:
+                # 全览时相邻脉冲可能落在同一像素，放大后再逐条显示。
+                spread_px = (visible_times[-1] - visible_times[0]) * pixels_per_second
+                if spread_px < 4 * (len(visible_times) - 1):
+                    visible_times = visible_times[:1]
             if show_marker:
-                segments.append([(g.t0, 0.0), (g.t0, 1.0)])
-            if show_band and g.t1 > g.t0:
-                bands.append([(g.t0, 0.0), (g.t0, 1.0), (g.t1, 1.0), (g.t1, 0.0)])
+                segments.extend([(t, tick_bottom), (t, tick_top)] for t in visible_times)
+            if show_band and group.duration > 0:
+                start, end = max(group.t0, x0), min(group.t1, x1)
+                bands.append([(start, tick_bottom), (start, tick_top),
+                              (end, tick_top), (end, tick_bottom)])
+            anchor = visible_times[0] if visible_times else max(x0, group.t0)
+            candidates.append((group.n_records, anchor, label))
 
         self._stim_lines.set_segments(segments)
-        self._stim_bands.set_verts(bands if bands else [])
-
-        for txt in self._stim_labels:
-            txt.set_visible(False)
-        if not groups:
+        self._stim_bands.set_verts(bands)
+        if not candidates:
             return
 
-        # ---- 标注文字：按"重要程度"（记录条数）优先摆放 ----
-        tpl = str(cfg.get("stimulus.label_template", "{amp}V {freq}Hz {ch}c"))
-        min_gap = float(cfg.get("stimulus.label_min_gap_px", 32))
-        font_size = float(cfg.get("stimulus.label_size", 8.0))
-        dpi = float(self.fig.get_dpi())
-        left_px, _bottom, right_px, _top = self._axes_px()
-        usable = right_px - left_px
-        if usable <= 10:
-            return
-
-        def to_px(t: float) -> float:
-            return left_px + (t - x0) / (x1 - x0) * usable
-
-        candidates = []
-        for txt, g in zip(self._stim_labels, self.data.stimuli):
-            if g.t1 < x0 - span or g.t0 > x1 + span:
+        renderer = self.canvas.get_renderer()
+        occupied: List[List[Tuple[float, float]]] = [[] for _ in row_positions]
+        for _n_records, anchor, label in sorted(candidates, key=lambda item: (-item[0], item[1])):
+            anchor_px, _ = ax.get_xaxis_transform().transform((anchor, 0))
+            label.set_visible(True)
+            half = label.get_window_extent(renderer).width / 2
+            label.set_visible(False)
+            if 2 * half > width - 4:
                 continue
-            anchor = max(g.t0, x0)                    # 组跨过左边界时贴左边显示
-            px = to_px(anchor)
-            if px < left_px - 2 or px > right_px + 2:
-                continue
-            candidates.append((g.n_records, g.t0, g, txt, px))
-
-        candidates.sort(key=lambda item: (-item[0], item[1]))
-        rows = max(1, int(cfg.get("stimulus.label_rows", 3)))
-        step_y = float(cfg.get("stimulus.label_row_step", 0.048))
-        row_y = [0.985 - i * step_y for i in range(rows)]
-        rows_placed: List[List[Tuple[float, float]]] = [[] for _ in row_y]
-        renderer = None
-        try:
-            renderer = self.canvas.get_renderer()
-        except Exception:
-            renderer = None
-
-        for _n, _t, g, txt, px in candidates:
-            text = g.label(tpl)
-            text_w = self._text_width_px(text, font_size, dpi)
-            if renderer is not None:
-                txt.set_text(text)
-                txt.set_position((g.t0, row_y[0]))
-                txt.set_visible(True)
-                try:
-                    measured = txt.get_window_extent(renderer).width
-                    if measured and measured > 1:
-                        text_w = float(measured)
-                except Exception:
-                    pass
-                txt.set_visible(False)
-
-            ha = "left"
-            x_anchor = max(g.t0, x0)
-            if px + text_w > right_px - 2:             # 右边放不下就反向对齐
-                ha = "right"
-                if px - text_w < left_px + 2:
-                    continue                           # 两边都放不下，跳过
-            box = (px, px + text_w) if ha == "left" else (px - text_w, px)
-            if box[0] < left_px + 2 or box[1] > right_px - 2:
-                continue
-
-            for index, boxes in enumerate(rows_placed):
-                if any(not (box[1] + min_gap < other[0] or box[0] - min_gap > other[1])
-                       for other in boxes):
+            center = min(max(anchor_px, left + half + 2), left + width - half - 2)
+            start, end = center - half, center + half
+            for row_y, boxes in zip(row_positions, occupied):
+                if any(start < b + min_gap and end + min_gap > a for a, b in boxes):
                     continue
-                boxes.append(box)
-                txt.set_text(text)
-                txt.set_ha(ha)
-                txt.set_position((x_anchor, row_y[index]))
-                txt.set_visible(True)
+                boxes.append((start, end))
+                time, _ = ax.transData.inverted().transform((center, bottom))
+                label.set_position((time, row_y))
+                label.set_visible(True)
                 break
-
-    @staticmethod
-    def _text_width_px(text: str, font_size: float, dpi: float) -> float:
-        """粗略估算文字像素宽度（无 renderer 时使用）。"""
-        unit = font_size * dpi / 72.0
-        width = 0.0
-        for ch in text:
-            width += unit * (1.0 if ord(ch) > 0x2E7F else 0.56)
-        return width
 
     def _update_stats(self, i0: int, i1: int) -> None:
         cfg = self.cfg
